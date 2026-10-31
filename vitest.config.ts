@@ -18,5 +18,6 @@ export default defineConfig({
       META_APP_SECRET: "test-meta-app-secret",
     },
     clearMocks: true,
+    testTimeout: 15000,
   },
 });
