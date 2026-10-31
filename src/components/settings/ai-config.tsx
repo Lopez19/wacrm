@@ -2,7 +2,15 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
-import { Loader2, Sparkles, CheckCircle2, Trash2, Eye, EyeOff } from 'lucide-react';
+import {
+  Loader2,
+  Sparkles,
+  CheckCircle2,
+  Trash2,
+  Eye,
+  EyeOff,
+  RefreshCw,
+} from 'lucide-react';
 import { useAuth } from '@/hooks/use-auth';
 import { canEditSettings } from '@/lib/auth/roles';
 import { Button } from '@/components/ui/button';
@@ -27,6 +35,12 @@ import {
 import { SettingsPanelHead } from './settings-panel-head';
 import { AiKnowledgeCard } from './ai-knowledge';
 import { AI_PROVIDER_DEFAULT_MODEL } from '@/lib/ai/defaults';
+import {
+  DEFAULT_OLLAMA_BASE_URL,
+  DEFAULT_OLLAMA_MODEL,
+  OLLAMA_PLACEHOLDER_API_KEY,
+  isOllamaBaseUrl,
+} from '@/lib/ai/ollama';
 import type { AiProvider } from '@/lib/ai/types';
 import type { AccountMember } from '@/types';
 import { fetchAccountMembers, memberLabel } from '@/lib/account/members';
@@ -38,6 +52,8 @@ const MASKED_KEY = '••••••••••••••••';
 // Radix Select can't use an empty-string item value, so the "leave
 // unassigned" choice gets a sentinel that maps to null in the payload.
 const HANDOFF_QUEUE = '__queue__';
+
+type UiAiProvider = AiProvider | 'ollama';
 
 const PROVIDER_LABEL: Record<Exclude<AiProvider, 'openai_compatible'>, string> = {
   openai: 'OpenAI',
@@ -61,7 +77,7 @@ export function AiConfig() {
   const [removing, setRemoving] = useState(false);
 
   const [configured, setConfigured] = useState(false);
-  const [provider, setProvider] = useState<AiProvider>('openai');
+  const [uiProvider, setUiProvider] = useState<UiAiProvider>('openai');
   const [model, setModel] = useState(AI_PROVIDER_DEFAULT_MODEL.openai);
   const [baseUrl, setBaseUrl] = useState('');
   const [apiKey, setApiKey] = useState('');
@@ -79,11 +95,61 @@ export function AiConfig() {
   const [handoffAgentId, setHandoffAgentId] = useState('');
   const [members, setMembers] = useState<AccountMember[]>([]);
 
+  const [detectingModels, setDetectingModels] = useState(false);
+  const [ollamaModels, setOllamaModels] = useState<string[] | null>(null);
+
+  const isOllama = uiProvider === 'ollama';
+  const effectiveProvider: AiProvider = isOllama ? 'openai_compatible' : uiProvider;
+  const usesCustomBaseUrl =
+    uiProvider === 'openai_compatible' || uiProvider === 'ollama';
+
   // Guard keyed on the account (not a bare boolean) so an in-place
   // account switch — ownership transfer, multi-account membership —
   // refetches instead of showing the previous account's config. Mirrors
   // the loadedAccountIdRef pattern in whatsapp-config.tsx.
   const loadedAccountIdRef = useRef<string | null>(null);
+
+  const detectOllamaModels = useCallback(
+    async (targetBaseUrl: string, opts: { silent?: boolean } = {}) => {
+      setDetectingModels(true);
+      try {
+        const res = await fetch('/api/ai/ollama/models', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            base_url: targetBaseUrl.trim() || DEFAULT_OLLAMA_BASE_URL,
+          }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          if (!opts.silent) {
+            toast.error(data.error ?? t('testNetworkError'));
+          }
+          setOllamaModels(null);
+          return;
+        }
+        const detected = Array.isArray(data.models) ? (data.models as string[]) : [];
+        setOllamaModels(detected);
+        if (detected.length > 0) {
+          setModel((current) =>
+            !current.trim() || current === DEFAULT_OLLAMA_MODEL
+              ? detected[0]
+              : current,
+          );
+          if (!opts.silent) {
+            toast.success(t('detectModelsFound', { count: detected.length }));
+          }
+        }
+      } catch {
+        if (!opts.silent) {
+          toast.error(t('testNetworkError'));
+        }
+      } finally {
+        setDetectingModels(false);
+      }
+    },
+    [t],
+  );
 
   const fetchConfig = useCallback(async () => {
     setLoading(true);
@@ -96,9 +162,12 @@ export function AiConfig() {
       }
       if (data.configured) {
         setConfigured(true);
-        setProvider(data.provider);
+        const loadedBaseUrl = data.base_url ?? '';
+        const detectedOllama =
+          data.provider === 'openai_compatible' && isOllamaBaseUrl(loadedBaseUrl);
+        setUiProvider(detectedOllama ? 'ollama' : data.provider);
         setModel(data.model);
-        setBaseUrl(data.base_url ?? '');
+        setBaseUrl(loadedBaseUrl);
         setSystemPrompt(data.system_prompt ?? '');
         setIsActive(data.is_active);
         setAutoReplyEnabled(data.auto_reply_enabled);
@@ -110,13 +179,16 @@ export function AiConfig() {
         setHasStoredEmbeddingsKey(Boolean(data.has_embeddings_key));
         setEmbeddingsKey(data.has_embeddings_key ? MASKED_KEY : '');
         setEmbeddingsKeyEdited(false);
+        if (detectedOllama) {
+          void detectOllamaModels(loadedBaseUrl, { silent: true });
+        }
       }
     } catch {
       toast.error(t('loadFailed'));
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [detectOllamaModels, t]);
 
   useEffect(() => {
     if (!accountId || loadedAccountIdRef.current === accountId) return;
@@ -130,26 +202,53 @@ export function AiConfig() {
 
   // Swap the model default when the provider changes, unless the user
   // typed a custom model.
-  const handleProviderChange = (next: AiProvider) => {
-    setProvider(next);
+  const handleProviderChange = (next: UiAiProvider) => {
+    setUiProvider(next);
     const isDefaultModel =
       model === AI_PROVIDER_DEFAULT_MODEL.openai ||
       model === AI_PROVIDER_DEFAULT_MODEL.anthropic ||
       model === AI_PROVIDER_DEFAULT_MODEL.openai_compatible ||
+      model === DEFAULT_OLLAMA_MODEL ||
       model.trim() === '';
-    if (isDefaultModel) setModel(next === 'openai_compatible' ? '' : AI_PROVIDER_DEFAULT_MODEL[next]);
+
+    if (next === 'ollama') {
+      const nextUrl =
+        baseUrl.trim() && isOllamaBaseUrl(baseUrl)
+          ? baseUrl.trim()
+          : DEFAULT_OLLAMA_BASE_URL;
+      setBaseUrl(nextUrl);
+      if (isDefaultModel) setModel(DEFAULT_OLLAMA_MODEL);
+      void detectOllamaModels(nextUrl, { silent: true });
+    } else {
+      setOllamaModels(null);
+      if (isDefaultModel) {
+        setModel(
+          next === 'openai_compatible' ? '' : AI_PROVIDER_DEFAULT_MODEL[next],
+        );
+      }
+    }
   };
 
-  const keyPayload = () => (keyEdited ? apiKey.trim() : undefined);
+  const keyPayload = () => {
+    if (keyEdited) {
+      const trimmed = apiKey.trim();
+      if (trimmed) return trimmed;
+      return isOllama ? OLLAMA_PLACEHOLDER_API_KEY : '';
+    }
+    if (isOllama && !hasStoredKey) {
+      return OLLAMA_PLACEHOLDER_API_KEY;
+    }
+    return undefined;
+  };
 
   // undefined = leave unchanged; '' typed = null (clear); text = set.
   const embeddingsKeyPayload = () =>
     embeddingsKeyEdited ? embeddingsKey.trim() || null : undefined;
 
   const buildBody = () => ({
-    provider,
+    provider: effectiveProvider,
     model: model.trim(),
-    base_url: provider === 'openai_compatible' ? baseUrl.trim() : null,
+    base_url: usesCustomBaseUrl ? baseUrl.trim() : null,
     api_key: keyPayload(),
     embeddings_api_key: embeddingsKeyPayload(),
     system_prompt: systemPrompt.trim() || null,
@@ -166,10 +265,11 @@ export function AiConfig() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          provider,
+          provider: effectiveProvider,
           model: model.trim(),
-          base_url: provider === 'openai_compatible' ? baseUrl.trim() : null,
-          api_key: keyPayload(),
+          base_url: usesCustomBaseUrl ? baseUrl.trim() : null,
+          api_key:
+            keyPayload() ?? (isOllama ? OLLAMA_PLACEHOLDER_API_KEY : undefined),
         }),
       });
       const data = await res.json();
@@ -187,20 +287,24 @@ export function AiConfig() {
       toast.error(t('missingModel'));
       return;
     }
-    if (provider === 'openai_compatible' && !baseUrl.trim()) {
+    if (usesCustomBaseUrl && !baseUrl.trim()) {
       toast.error(t('missingBaseUrl'));
       return;
     }
-    if (!configured && !keyEdited) {
+    if (!isOllama && !configured && !keyEdited) {
       toast.error(t('missingApiKey'));
       return;
     }
     setSaving(true);
     try {
+      const payload = buildBody();
+      if (isOllama && !payload.api_key) {
+        payload.api_key = OLLAMA_PLACEHOLDER_API_KEY;
+      }
       const res = await fetch('/api/ai/config', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(buildBody()),
+        body: JSON.stringify(payload),
       });
       const data = await res.json();
       if (res.ok) {
@@ -233,6 +337,7 @@ export function AiConfig() {
         setAutoReplyEnabled(false);
         setSystemPrompt('');
         setHandoffAgentId('');
+        setOllamaModels(null);
       } else {
         const data = await res.json();
         toast.error(data.error ?? t('removeFailed'));
@@ -247,8 +352,7 @@ export function AiConfig() {
   if (loading || profileLoading) {
     return (
       <div className="flex items-center justify-center py-16 text-muted-foreground">
-        <Loader2 className="mr-2 h-4 w-4 animate-spin" /> {t('loadFailed')} {/* Re-using label or a global one, wait, loading is better. Let's use useTranslations from overview or just hardcode Loading... actually I should add loading to aiConfig */}
-        {/* Wait, I didn't add loading to aiConfig. I'll just use loading. */}
+        <Loader2 className="mr-2 h-4 w-4 animate-spin" /> {t('loadFailed')}
       </div>
     );
   }
@@ -283,8 +387,8 @@ export function AiConfig() {
               <div className="space-y-2">
                 <Label>{t('provider')}</Label>
                 <Select
-                  value={provider}
-                  onValueChange={(v) => handleProviderChange(v as AiProvider)}
+                  value={uiProvider}
+                  onValueChange={(v) => handleProviderChange(v as UiAiProvider)}
                   disabled={disabled}
                 >
                   <SelectTrigger>
@@ -295,6 +399,7 @@ export function AiConfig() {
                     <SelectItem value="anthropic">
                       {PROVIDER_LABEL.anthropic}
                     </SelectItem>
+                    <SelectItem value="ollama">{t('providerOllama')}</SelectItem>
                     <SelectItem value="openai_compatible">
                       {t('providerOpenAiCompatible')}
                     </SelectItem>
@@ -304,33 +409,98 @@ export function AiConfig() {
 
               <div className="space-y-2">
                 <Label htmlFor="ai-model">{t('model')}</Label>
-                <Input
-                  id="ai-model"
-                  value={model}
-                  onChange={(e) => setModel(e.target.value)}
-                  placeholder={AI_PROVIDER_DEFAULT_MODEL[provider]}
-                  disabled={disabled}
-                />
+                <div className="flex gap-2">
+                  <Input
+                    id="ai-model"
+                    value={model}
+                    onChange={(e) => setModel(e.target.value)}
+                    placeholder={
+                      isOllama
+                        ? DEFAULT_OLLAMA_MODEL
+                        : AI_PROVIDER_DEFAULT_MODEL[effectiveProvider]
+                    }
+                    disabled={disabled}
+                  />
+                  {isOllama && (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={() => void detectOllamaModels(baseUrl)}
+                      disabled={disabled || detectingModels}
+                      className="shrink-0"
+                    >
+                      <RefreshCw
+                        className={`mr-1.5 h-4 w-4 ${detectingModels ? 'animate-spin' : ''}`}
+                      />
+                      {t('detectModels')}
+                    </Button>
+                  )}
+                </div>
+                {isOllama && ollamaModels !== null && (
+                  <div className="pt-1">
+                    {ollamaModels.length > 0 ? (
+                      <div className="space-y-1.5">
+                        <p className="text-xs text-muted-foreground">
+                          {t('detectedModelsLabel')}
+                        </p>
+                        <div className="flex flex-wrap gap-1.5">
+                          {ollamaModels.map((m) => (
+                            <button
+                              key={m}
+                              type="button"
+                              onClick={() => setModel(m)}
+                              disabled={disabled}
+                              className={`rounded-md border px-2 py-0.5 text-xs transition-colors ${
+                                model === m
+                                  ? 'border-primary bg-primary/10 font-medium text-primary'
+                                  : 'border-border bg-muted/40 text-muted-foreground hover:text-foreground'
+                              }`}
+                            >
+                              {m}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    ) : (
+                      <p className="rounded-md border border-amber-500/30 bg-amber-500/10 px-2.5 py-1.5 text-xs text-amber-300">
+                        {t('detectModelsEmpty')}
+                      </p>
+                    )}
+                  </div>
+                )}
               </div>
 
-              {provider === 'openai_compatible' && (
-                <div className="space-y-2">
+              {usesCustomBaseUrl && (
+                <div className="space-y-2 sm:col-span-2">
                   <Label htmlFor="ai-base-url">{t('baseUrl')}</Label>
                   <Input
                     id="ai-base-url"
                     value={baseUrl}
                     onChange={(e) => setBaseUrl(e.target.value)}
-                    placeholder="https://api.example.com/v1"
+                    placeholder={
+                      isOllama
+                        ? DEFAULT_OLLAMA_BASE_URL
+                        : 'https://api.example.com/v1'
+                    }
                     disabled={disabled}
                     autoComplete="off"
                   />
-                  <p className="text-xs text-muted-foreground">{t('baseUrlHint')}</p>
+                  <p className="text-xs text-muted-foreground">
+                    {isOllama ? t('ollamaBaseUrlHint') : t('baseUrlHint')}
+                  </p>
                 </div>
               )}
             </div>
 
             <div className="space-y-2">
-              <Label htmlFor="ai-key">{t('apiKey')}</Label>
+              <Label htmlFor="ai-key">
+                {t('apiKey')}{' '}
+                {isOllama && (
+                  <span className="font-normal text-muted-foreground">
+                    {t('apiKeyOptionalOllama')}
+                  </span>
+                )}
+              </Label>
               <div className="flex gap-2">
                 <div className="relative flex-1">
                   <Input
@@ -347,7 +517,11 @@ export function AiConfig() {
                         setKeyEdited(true);
                       }
                     }}
-                    placeholder={KEY_PLACEHOLDER[provider]}
+                    placeholder={
+                      isOllama
+                        ? t('ollamaKeyPlaceholder')
+                        : KEY_PLACEHOLDER[effectiveProvider]
+                    }
                     disabled={disabled}
                     autoComplete="off"
                   />
@@ -406,7 +580,8 @@ export function AiConfig() {
               />
               <p className="text-xs text-muted-foreground">
                 {t('embeddingsHint', {
-                  sameKeyText: provider === 'openai' ? t('sameKeyText') : '',
+                  sameKeyText:
+                    effectiveProvider === 'openai' ? t('sameKeyText') : '',
                 })}
               </p>
             </div>

@@ -2170,7 +2170,15 @@
       "providerOpenAiCompatible": "API compatible con OpenAI",
       "baseUrl": "URL base",
       "baseUrlHint": "URL base de la API compatible con OpenAI, por ejemplo https://api.groq.com/openai/v1. /chat/completions se añade automáticamente, salvo que incluyas esa ruta.",
-      "missingBaseUrl": "Introduce la URL base de la API compatible con OpenAI."
+      "missingBaseUrl": "Introduce la URL base de la API compatible con OpenAI.",
+      "providerOllama": "Ollama (Local / Docker)",
+      "ollamaBaseUrlHint": "URL del servidor Ollama (p. ej. http://127.0.0.1:11434/v1 o http://host.docker.internal:11434/v1). El host debe estar en AI_PROVIDER_ALLOWED_PRIVATE_HOSTS.",
+      "apiKeyOptionalOllama": "(opcional para Ollama)",
+      "ollamaKeyPlaceholder": "No requiere clave (se usará 'ollama' automáticamente)",
+      "detectModels": "Detectar modelos",
+      "detectedModelsLabel": "Modelos instalados en Ollama (haz clic para elegir):",
+      "detectModelsEmpty": "Conectado a Ollama, pero aún no hay modelos descargados en el contenedor. Descarga uno ejecutando: docker exec -it ollama ollama pull llama3.2",
+      "detectModelsFound": "Se encontraron {count} modelo(s) en Ollama."
     },
     "aiKnowledge": {
       "loadFailed": "Error al cargar la base de conocimiento",

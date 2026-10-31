@@ -2170,7 +2170,15 @@
       "providerOpenAiCompatible": "OpenAI 호환 API",
       "baseUrl": "기본 URL",
       "baseUrlHint": "OpenAI 호환 API의 기본 URL입니다. 예: https://api.groq.com/openai/v1. /chat/completions 경로는 직접 입력하지 않는 경우 자동으로 추가됩니다.",
-      "missingBaseUrl": "OpenAI 호환 API의 기본 URL을 입력하세요."
+      "missingBaseUrl": "OpenAI 호환 API의 기본 URL을 입력하세요.",
+      "providerOllama": "Ollama (로컬 / Docker)",
+      "ollamaBaseUrlHint": "Ollama 서버 URL (예: http://127.0.0.1:11434/v1 또는 http://host.docker.internal:11434/v1). 호스트가 AI_PROVIDER_ALLOWED_PRIVATE_HOSTS에 포함되어야 합니다.",
+      "apiKeyOptionalOllama": "(Ollama에서는 선택 사항)",
+      "ollamaKeyPlaceholder": "API 키 필요 없음 (기본값 'ollama' 사용)",
+      "detectModels": "모델 감지",
+      "detectedModelsLabel": "설치된 Ollama 모델 (클릭하여 선택):",
+      "detectModelsEmpty": "Ollama에 연결되었지만 아직 다운로드된 모델이 없습니다. 다음 명령어로 모델을 받으세요: docker exec -it ollama ollama pull llama3.2",
+      "detectModelsFound": "Ollama에서 {count}개의 모델을 찾았습니다."
     },
     "aiKnowledge": {
       "loadFailed": "지식베이스를 불러오지 못했습니다",
