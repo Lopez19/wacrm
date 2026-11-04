@@ -1,12 +1,8 @@
 import { NextResponse } from 'next/server';
 import { requireRole, toErrorResponse } from '@/lib/auth/account';
-import {
-  checkRateLimit,
-  rateLimitResponse,
-  RATE_LIMITS,
-} from '@/lib/rate-limit';
+import { checkRateLimit, rateLimitResponse, RATE_LIMITS } from '@/lib/rate-limit';
 import { AiError } from '@/lib/ai/types';
-import { DEFAULT_OLLAMA_BASE_URL, resolveOllamaTagsUrl } from '@/lib/ai/ollama';
+import { normalizeOpenAiCompatibleBaseUrl } from '@/lib/ai/providers/openai-compatible';
 import { allowedPrivateHosts } from '@/lib/ai/providers/openai-compatible';
 import { isDeliverableUrl } from '@/lib/webhooks/ssrf';
 import { getT } from '@/lib/i18n/translate';
@@ -14,23 +10,23 @@ import { getT } from '@/lib/i18n/translate';
 const t = getT('Api');
 const tErr = getT('LibErrors');
 
-interface OllamaTagsResponse {
-  models?: Array<{ name?: string; model?: string }>;
+interface ModelsResponse {
+  data?: Array<{ id?: string; model?: string }>;
 }
 
 /**
- * POST /api/ai/ollama/models  (admin+)
+ * POST /api/ai/models  (admin+)
  *
- * Queries the configured Ollama instance's `/api/tags` endpoint and returns
- * the list of locally installed model names so the UI can offer 1-click
- * selection or inform the user when no models have been pulled yet.
+ * Queries an OpenAI-compatible provider's `/models` endpoint and returns
+ * the list of available model IDs so the UI can offer a dropdown selection.
+ * Works with any OpenAI-compatible API (Ollama, Groq, Together, vLLM, etc.).
  */
 export async function POST(request: Request) {
   try {
     const { userId } = await requireRole('admin');
 
     const limit = checkRateLimit(
-      `ai-ollama-models:${userId}`,
+      `ai-models:${userId}`,
       RATE_LIMITS.adminAction
     );
     if (!limit.success) return rateLimitResponse(limit);
@@ -39,11 +35,27 @@ export async function POST(request: Request) {
     const rawBaseUrl =
       typeof body?.base_url === 'string' && body.base_url.trim()
         ? body.base_url.trim()
-        : DEFAULT_OLLAMA_BASE_URL;
+        : '';
+    const apiKey =
+      typeof body?.api_key === 'string' && body.api_key.trim()
+        ? body.api_key.trim()
+        : '';
 
-    let tagsUrl: string;
+    if (!rawBaseUrl) {
+      return NextResponse.json(
+        { error: t('ai.compatBaseUrlRequired'), code: 'invalid_base_url' },
+        { status: 400 }
+      );
+    }
+
+    let modelsUrl: string;
     try {
-      tagsUrl = resolveOllamaTagsUrl(rawBaseUrl);
+      // Normalize the base URL (ensures /chat/completions suffix)
+      const completionsUrl = normalizeOpenAiCompatibleBaseUrl(rawBaseUrl);
+      const parsed = new URL(completionsUrl);
+      // Replace /chat/completions with /models
+      parsed.pathname = '/models';
+      modelsUrl = parsed.toString();
     } catch (err) {
       return NextResponse.json(
         {
@@ -54,7 +66,7 @@ export async function POST(request: Request) {
       );
     }
 
-    const deliverable = await isDeliverableUrl(tagsUrl, {
+    const deliverable = await isDeliverableUrl(modelsUrl, {
       allowPrivateHosts: allowedPrivateHosts(),
     }).catch(() => false);
 
@@ -72,10 +84,17 @@ export async function POST(request: Request) {
 
     let res: Response;
     try {
-      res = await fetch(tagsUrl, {
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+      };
+      if (apiKey) {
+        headers['Authorization'] = `Bearer ${apiKey}`;
+      }
+      res = await fetch(modelsUrl, {
         method: 'GET',
         redirect: 'manual',
-        signal: AbortSignal.timeout(5000),
+        headers,
+        signal: AbortSignal.timeout(10000),
       });
     } catch {
       return NextResponse.json(
@@ -93,13 +112,13 @@ export async function POST(request: Request) {
 
     const data = (await res
       .json()
-      .catch(() => null)) as OllamaTagsResponse | null;
+      .catch(() => null)) as ModelsResponse | null;
     const models = Array.from(
       new Set(
-        (data?.models ?? [])
+        (data?.data ?? [])
           .map((m) =>
-            typeof m?.name === 'string'
-              ? m.name.trim()
+            typeof m?.id === 'string'
+              ? m.id.trim()
               : typeof m?.model === 'string'
                 ? m.model.trim()
                 : ''
